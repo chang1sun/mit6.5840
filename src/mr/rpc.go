@@ -14,8 +14,9 @@ import (
 type TaskType int
 
 const (
-	Map    TaskType = 1
-	Reduce TaskType = 2
+	TaskTypeMap    TaskType = 1
+	TaskTypeReduce TaskType = 2
+	TaskTypeExit   TaskType = 3
 )
 
 //
@@ -31,23 +32,30 @@ type ExampleReply struct {
 	Y int
 }
 
+type RegisterArgs struct {
+	WorkerPid int
+}
+
+type RegisterReply struct {
+	CoordinatorPid int
+}
+
 type TaskAskArgs struct {
-	workerPid int
+	WorkerPid int
 }
 
 type TaskAskReply struct {
-	TaskType  TaskType
-	taskNo    int
-	taskFiles []string
+	TaskType TaskType
+	TaskNo   int
+	NReduce  int
+	Inputs   []string
 }
 
 type TaskFinishArgs struct {
-	workerPid int
-	isSucceed bool
+	WorkerPid int
 }
 
 type TaskFinishReply struct {
-	workerPid int
 }
 
 // Add your RPC definitions here.

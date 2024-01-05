@@ -17,6 +17,7 @@ const (
 	TaskTypeMap    TaskType = 1
 	TaskTypeReduce TaskType = 2
 	TaskTypeExit   TaskType = 3
+	TaskTypeNon    TaskType = 4
 )
 
 //
@@ -52,6 +53,8 @@ type TaskAskReply struct {
 }
 
 type TaskFinishArgs struct {
+	TaskNo    int
+	TaskType  TaskType
 	WorkerPid int
 }
 

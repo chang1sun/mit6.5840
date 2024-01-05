@@ -11,11 +11,23 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"time"
 
 	"6.5840/mr"
 )
+
+func init() {
+	file := "coordinator.log"
+	logFile, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0766)
+	if err != nil {
+		panic(err)
+	}
+	log.SetOutput(logFile) // 将文件设置为log输出的文件
+	log.SetFlags(log.LstdFlags | log.Lshortfile | log.LUTC)
+	return
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -27,6 +39,6 @@ func main() {
 	for m.Done() == false {
 		time.Sleep(time.Second)
 	}
-
+	log.Printf("All task done. Coordinator %v exit...", os.Getpid())
 	time.Sleep(time.Second)
 }

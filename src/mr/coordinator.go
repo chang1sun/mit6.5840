@@ -1,28 +1,45 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
+	"time"
 )
 
-type workerProcessStatus int
+type WorkerProcessStatus int
 
 const (
-	workerProcessStatusReady   workerProcessStatus = 1
-	workerProcessStatusRunning workerProcessStatus = 2
-	workerProcessStatusExit    workerProcessStatus = 3
+	WorkerProcessStatusReady   WorkerProcessStatus = 1
+	WorkerProcessStatusRunning WorkerProcessStatus = 2
+	WorkerProcessStatusExit    WorkerProcessStatus = 3
 )
 
-type workerProfile struct {
-	status   workerProcessStatus
-	filename string
+type WorkerStat struct {
+	Pid    int
+	Status WorkerProcessStatus
+}
+
+type MRTask struct {
+	taskNo    int
+	filename  []string
+	taskType  TaskType
+	workerPid int // -1 indicates it has not been assigned.
+	done      bool
 }
 
 type Coordinator struct {
-	WorkerStatus map[int]workerProcessStatus // pid of workers
+	workerStat map[int]WorkerStat
+	workerLock sync.Mutex
+	taskStat   []*MRTask
+	waitT      chan *MRTask
+	finT       chan *MRTask
+	nMap       int
+	nReduce    int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -36,19 +53,72 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) TaskAsk(args *TaskAskArgs, reply *TaskAskReply) error {
-	log.Printf("Hello, worker %v.", args.WorkerPid)
-	reply.TaskType = TaskTypeExit
-	c.WorkerStatus[args.WorkerPid] = workerProcessStatusExit
+	workerPid := args.WorkerPid
+
+	if len(c.waitT) == 0 {
+		reply.TaskType = TaskTypeNon
+		return nil
+	}
+
+	task := <-c.waitT
+	task.workerPid = workerPid
+
+	stat := c.workerStat[workerPid]
+	stat.Status = WorkerProcessStatusRunning
+
+	go func() {
+		task := task
+		stat := stat
+		// Sleep 10s
+		time.Sleep(10 * 1000 * 1000 * 1000)
+		// Reassign tasks.
+		if !task.done && stat.Status == WorkerProcessStatusRunning {
+			log.Printf("It cost too long to wait task %+v to finish, worker %v may be killed or hang, reassign the task.", task, task.workerPid)
+			task.workerPid = -1
+			c.waitT <- task
+		}
+	}()
+
+	reply.TaskType = task.taskType
+	reply.Inputs = task.filename
+	reply.NReduce = c.nReduce
+	reply.TaskNo = task.taskNo
 	return nil
 }
 
 func (c *Coordinator) TaskFinish(args *TaskFinishArgs, reply *TaskFinishReply) error {
-	// TODO
+	stat := c.workerStat[args.WorkerPid]
+	stat.Status = WorkerProcessStatusReady
+	taskNo := args.TaskNo
+	if args.TaskType == TaskTypeReduce {
+		taskNo += c.nMap
+		// Clean up intermediate files
+		for _, v := range c.taskStat[taskNo].filename {
+			if err := os.Remove(v); err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+	task := c.taskStat[taskNo]
+	c.finT <- task
+	task.done = true
+	if len(c.finT) == c.nMap {
+		c.initReduceTasks()
+	}
 	return nil
 }
 
 func (c *Coordinator) Register(args *RegisterArgs, reply *RegisterReply) error {
-	c.WorkerStatus[args.WorkerPid] = workerProcessStatusReady
+	if c.Done() {
+		log.Println("Task is done, new workers will not be accepted.")
+		return nil
+	}
+	c.workerLock.Lock()
+	c.workerStat[args.WorkerPid] = WorkerStat{
+		Pid:    args.WorkerPid,
+		Status: WorkerProcessStatusReady,
+	}
+	c.workerLock.Unlock()
 	reply.CoordinatorPid = os.Getpid()
 	return nil
 }
@@ -71,27 +141,51 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	if (len(c.WorkerStatus)) == 0 {
-		return false
-	}
-	for _, v := range c.WorkerStatus {
-		if v != workerProcessStatusExit {
-			return false
+	return len(c.finT) == c.nReduce+c.nMap
+}
+
+func (c *Coordinator) initReduceTasks() {
+	for i := 0; i < c.nReduce; i++ {
+		filenames := []string{}
+		for j := 0; j < c.nMap; j++ {
+			filenames = append(filenames, fmt.Sprintf("mr-%v-%v", j, i))
 		}
+		task := &MRTask{
+			taskNo:    i,
+			taskType:  TaskTypeReduce,
+			filename:  filenames,
+			workerPid: -1,
+			done:      false,
+		}
+		c.taskStat = append(c.taskStat, task)
+		c.waitT <- task
 	}
-	return true
 }
 
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	nMap := len(files)
 	c := Coordinator{
-		map[int]workerProcessStatus{},
+		workerStat: map[int]WorkerStat{},
+		taskStat:   []*MRTask{},
+		waitT:      make(chan *MRTask, nMap+nReduce),
+		finT:       make(chan *MRTask, nMap+nReduce),
+		nMap:       nMap,
+		nReduce:    nReduce,
 	}
-
-	// Your code here.
-
+	for i, filename := range files {
+		task := &MRTask{
+			taskNo:    i,
+			filename:  []string{filename},
+			taskType:  TaskTypeMap,
+			workerPid: -1,
+			done:      false,
+		}
+		c.taskStat = append(c.taskStat, task)
+		c.waitT <- task
+	}
 	c.server()
 	return &c
 }

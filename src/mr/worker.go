@@ -44,13 +44,14 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		taskType, taskNo, nReduce, taskFiles, err := AskForTask()
 		if err != nil {
-			log.Fatalf("Failed to call `AskForTask`. Reason: %v", err)
-			return
+			log.Printf("No reply, worker %v exits...\n", os.Getpid())
+			os.Exit(0)
 		}
 
 		switch taskType {
 		// Handle map task.
 		case TaskTypeMap:
+			log.Printf("Map task %v assigned", taskNo)
 			filename := taskFiles[0]
 			file, err := os.Open(filename)
 			if err != nil {
@@ -72,21 +73,37 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			for reduceNo, kva := range grouped {
-				tmpFile, err := os.CreateTemp("../target", "map_tmp")
+				tmpFile, err := os.CreateTemp(".", "map_tmp")
 				if err != nil {
 					log.Fatal(err)
 				}
+
 				encoder := json.NewEncoder(tmpFile)
 				for _, kv := range kva {
 					if err := encoder.Encode(kv); err != nil {
 						log.Fatal(err)
 					}
 				}
-				os.Rename(tmpFile.Name(), fmt.Sprintf("../target/map_%v_%v", taskNo, reduceNo))
+
+				target := fmt.Sprintf("mr-%v-%v", taskNo, reduceNo)
+				if err := os.Rename(tmpFile.Name(), target); err != nil {
+					if os.IsExist(err) {
+						if err := os.Remove(target); err != nil {
+							log.Fatal(err)
+						}
+						if err := os.Rename(tmpFile.Name(), target); err != nil {
+							log.Fatal(err)
+						}
+					} else {
+						log.Fatal(err)
+					}
+				}
 			}
+			FinishTask(taskType, taskNo)
 
 		// Handle reduce task.
 		case TaskTypeReduce:
+			log.Printf("Reduce task %v assigned", taskNo)
 			intermediate := []KeyValue{}
 			for _, filename := range taskFiles {
 				file, err := os.Open(filename)
@@ -105,7 +122,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			sort.Sort(ByKey(intermediate))
 
-			tmpFile, err := os.CreateTemp("../target", "reduce_tmp")
+			tmpFile, err := os.CreateTemp(".", "reduce_tmp")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -127,21 +144,17 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 
-			os.Rename(tmpFile.Name(), fmt.Sprintf("../target/mr_out_%v", taskNo))
+			os.Rename(tmpFile.Name(), fmt.Sprintf("mr-out-%v", taskNo))
+			FinishTask(taskType, taskNo)
 
-		case TaskTypeExit:
-			log.Printf("Worker %v exits\n", os.Getpid())
-			os.Exit(0)
+		case TaskTypeNon:
+			log.Printf("No task assigned, wait and request again...")
+
 		default:
 			log.Fatalf("Invaild TaskType: %v", taskType)
 		}
 
-		//
-		// Notify the coordinator it has finished the work.
-		//
-		FinishTask()
-
-		// wait 200ms to continue.
+		// wait 1000ms to continue.
 		time.Sleep(200 * 1000 * 1000)
 	}
 	// uncomment to send the Example RPC to the coordinator.
@@ -169,9 +182,11 @@ func AskForTask() (TaskType, int, int, []string, error) {
 /**
  * Finishs for map/reduce tasks.
  */
-func FinishTask() error {
+func FinishTask(taskType TaskType, taskNo int) error {
 	args := TaskFinishArgs{
-		os.Getpid(),
+		WorkerPid: os.Getpid(),
+		TaskNo:    taskNo,
+		TaskType:  taskType,
 	}
 	reply := TaskFinishReply{}
 
@@ -192,7 +207,8 @@ func Register() int {
 	reply := RegisterReply{}
 	err := call("Coordinator.Register", &args, &reply)
 	if err != nil {
-		log.Fatalf("Register failed. Reason: %v", err)
+		log.Printf("MR job is done, worker %v exits...\n", os.Getpid())
+		os.Exit(0)
 	}
 	return reply.CoordinatorPid
 }

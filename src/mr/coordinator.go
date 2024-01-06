@@ -16,7 +16,6 @@ type WorkerProcessStatus int
 const (
 	WorkerProcessStatusReady   WorkerProcessStatus = 1
 	WorkerProcessStatusRunning WorkerProcessStatus = 2
-	WorkerProcessStatusExit    WorkerProcessStatus = 3
 )
 
 type WorkerStat struct {
@@ -54,6 +53,10 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (c *Coordinator) TaskAsk(args *TaskAskArgs, reply *TaskAskReply) error {
 	workerPid := args.WorkerPid
+
+	if _, ok := c.workerStat[workerPid]; !ok {
+		c.register(workerPid)
+	}
 
 	if len(c.waitT) == 0 {
 		reply.TaskType = TaskTypeNon
@@ -95,6 +98,9 @@ func (c *Coordinator) TaskFinish(args *TaskFinishArgs, reply *TaskFinishReply) e
 		// Clean up intermediate files
 		for _, v := range c.taskStat[taskNo].filename {
 			if err := os.Remove(v); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
 				log.Fatal(err)
 			}
 		}
@@ -108,19 +114,13 @@ func (c *Coordinator) TaskFinish(args *TaskFinishArgs, reply *TaskFinishReply) e
 	return nil
 }
 
-func (c *Coordinator) Register(args *RegisterArgs, reply *RegisterReply) error {
-	if c.Done() {
-		log.Println("Task is done, new workers will not be accepted.")
-		return nil
-	}
+func (c *Coordinator) register(workerPid int) {
 	c.workerLock.Lock()
-	c.workerStat[args.WorkerPid] = WorkerStat{
-		Pid:    args.WorkerPid,
+	c.workerStat[workerPid] = WorkerStat{
+		Pid:    workerPid,
 		Status: WorkerProcessStatusReady,
 	}
 	c.workerLock.Unlock()
-	reply.CoordinatorPid = os.Getpid()
-	return nil
 }
 
 // start a thread that listens for RPCs from worker.go

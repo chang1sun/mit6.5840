@@ -38,9 +38,6 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	coPid := Register()
-	log.Printf("Connect to coordinator: %v", coPid)
-
 	for {
 		taskType, taskNo, nReduce, taskFiles, err := AskForTask()
 		if err != nil {
@@ -108,7 +105,10 @@ func Worker(mapf func(string, string) []KeyValue,
 			for _, filename := range taskFiles {
 				file, err := os.Open(filename)
 				if err != nil {
-					log.Fatalf("cannot open %v", filename)
+					if os.IsNotExist(err) {
+						continue
+					}
+					log.Fatal(err)
 				}
 				dec := json.NewDecoder(file)
 				for {
@@ -144,7 +144,9 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 
-			os.Rename(tmpFile.Name(), fmt.Sprintf("mr-out-%v", taskNo))
+			if err := os.Rename(tmpFile.Name(), fmt.Sprintf("mr-out-%v", taskNo)); err != nil {
+				log.Fatal(err)
+			}
 			FinishTask(taskType, taskNo)
 
 		case TaskTypeNon:
@@ -154,8 +156,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Fatalf("Invaild TaskType: %v", taskType)
 		}
 
-		// wait 1000ms to continue.
-		time.Sleep(200 * 1000 * 1000)
+		// wait 50ms to continue.
+		time.Sleep(50 * 1000 * 1000)
 	}
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
@@ -182,7 +184,7 @@ func AskForTask() (TaskType, int, int, []string, error) {
 /**
  * Finishs for map/reduce tasks.
  */
-func FinishTask(taskType TaskType, taskNo int) error {
+func FinishTask(taskType TaskType, taskNo int) {
 	args := TaskFinishArgs{
 		WorkerPid: os.Getpid(),
 		TaskNo:    taskNo,
@@ -194,23 +196,9 @@ func FinishTask(taskType TaskType, taskNo int) error {
 	// the "Coordinator.Example" tells the
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
-	return call("Coordinator.TaskFinish", &args, &reply)
-}
-
-/**
- * Finishs for map/reduce tasks.
- */
-func Register() int {
-	args := RegisterArgs{
-		os.Getpid(),
+	if err := call("Coordinator.TaskFinish", &args, &reply); err != nil {
+		log.Fatal(err)
 	}
-	reply := RegisterReply{}
-	err := call("Coordinator.Register", &args, &reply)
-	if err != nil {
-		log.Printf("MR job is done, worker %v exits...\n", os.Getpid())
-		os.Exit(0)
-	}
-	return reply.CoordinatorPid
 }
 
 // send an RPC request to the coordinator, wait for the response.
